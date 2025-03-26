@@ -60,7 +60,7 @@ def handle_text(event):
         prompt = f"この画像は盆栽です。サイズは{text}です。種類（例：黒松、真柏など）と状態、推定価格帯を日本語で詳しく教えてください。"
 
         response = openai.chat.completions.create(
-            model="gpt-4-vision-preview",
+            model="gpt-4-turbo-2024-04-09",
             messages=[
                 {"role": "user", "content": [
                     {"type": "text", "text": prompt},
