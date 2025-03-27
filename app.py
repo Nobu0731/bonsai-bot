@@ -3,6 +3,7 @@ import openai
 from flask import Flask, request, abort
 from linebot import LineBotApi, WebhookHandler
 from linebot.models import MessageEvent, TextMessage, TextSendMessage, ImageMessage
+from linebot.exceptions import InvalidSignatureError
 
 app = Flask(__name__)
 
