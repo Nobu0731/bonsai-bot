@@ -22,12 +22,12 @@ user_data = {}
 @app.route("/callback", methods=['POST'])
 def callback():
     signature = request.headers['X-Line-Signature']
-    body = request.get_data(as_text=True)
+    body = request.get_data(as_text=True)  # ★ここで str のまま受け取る
 
     try:
-        handler.handle(body, signature)
-    except Exception as e:
-        print(f"Error: {e}")
+        handler.handle(body, signature)  # ★変換せずにそのまま渡す
+    except InvalidSignatureError:
+        print("❌ 署名不一致です")
         abort(400)
 
     return 'OK'
