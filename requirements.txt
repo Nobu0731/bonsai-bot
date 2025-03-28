@@ -3,3 +3,5 @@ openai
 line-bot-sdk
 requests
 gunicorn
+fastapi
+uvicorn
