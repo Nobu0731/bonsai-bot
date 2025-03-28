@@ -1,97 +1,93 @@
 import os
-import openai
-from flask import Flask, request, abort
+import requests
+from fastapi import FastAPI, Request
 from linebot import LineBotApi, WebhookHandler
-from linebot.models import MessageEvent, TextMessage, TextSendMessage, ImageMessage
-from linebot.exceptions import InvalidSignatureError
+from linebot.models import MessageEvent, TextMessage, ImageMessage, TextSendMessage
+from openai import OpenAI
+from PIL import Image
+from io import BytesIO
 
-app = Flask(__name__)
+# 環境変数
+LINE_CHANNEL_ACCESS_TOKEN = os.environ["LINE_CHANNEL_ACCESS_TOKEN"]
+LINE_CHANNEL_SECRET = os.environ["LINE_CHANNEL_SECRET"]
+OPENAI_API_KEY = os.environ["OPENAI_API_KEY"]
 
-# LINE APIキー
-LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
-LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
+# インスタンス初期化
+app = FastAPI()
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
+openai_client = OpenAI(api_key=OPENAI_API_KEY)
 
-# OpenAI APIキー
-openai.api_key = os.getenv("OPENAI_API_KEY")
+# ユーザーごとの画像を一時保存
+user_images = {}
 
-# 一時保存用の辞書（user_id: {image_url, size}）
-user_data = {}
-
-@app.route("/callback", methods=['POST'])
-def callback():
-    signature = request.headers['X-Line-Signature']
-    body = request.get_data(as_text=True)  # ← 必ずここで読み取る
-
-    try:
-        handler.handle(body, signature)
-    except InvalidSignatureError:
-        print("❌ 署名不一致です")
-        abort(400)
-
-    return 'OK'
-
+@app.post("/callback")
+async def callback(request: Request):
+    body = await request.body()
+    signature = request.headers["X-Line-Signature"]
+    handler.handle(body.decode("utf-8"), signature)
+    return "OK"
 
 @handler.add(MessageEvent, message=ImageMessage)
 def handle_image(event):
     user_id = event.source.user_id
-    message_id = event.message.id
+    message_content = line_bot_api.get_message_content(event.message.id)
 
-    # LINEの画像URL（実際は公開URL化が必要／ここは仮置き）
-    # LINEの画像は一時URLなのでCloudinaryやS3でホストするのが現実的です
-    dummy_image_url = "https://example.com/sample_bonsai.jpg"  # ← 仮の画像URL
+    image_bytes = b""
+    for chunk in message_content.iter_content():
+        image_bytes += chunk
 
-    user_data[user_id] = {
-        "image_url": dummy_image_url
-    }
+    user_images[user_id] = image_bytes
 
     line_bot_api.reply_message(
         event.reply_token,
         TextSendMessage(text="サイズをテキストで送ってください（例：15cm）")
     )
 
-
 @handler.add(MessageEvent, message=TextMessage)
 def handle_text(event):
     user_id = event.source.user_id
-    size_text = event.message.text
+    text = event.message.text
 
-    if user_id not in user_data or 'image_url' not in user_data[user_id]:
+    if user_id not in user_images:
         line_bot_api.reply_message(
             event.reply_token,
-            TextSendMessage(text="先に盆栽の写真を送ってください。")
+            TextSendMessage(text="先に盆栽の画像を送ってください")
         )
         return
 
-    image_url = user_data[user_id]['image_url']
-
+    # Vision APIで画像+テキストから査定
     try:
-        response = openai.ChatCompletion.create(
+        image_data = user_images.pop(user_id)
+        image_b64 = f"data:image/jpeg;base64,{image_data.hex()}"
+
+        response = openai_client.chat.completions.create(
             model="gpt-4-vision-preview",
             messages=[
                 {
+                    "role": "system",
+                    "content": "あなたはプロの盆栽査定士です。盆栽の見た目とサイズ情報をもとに、簡単な査定コメントを返してください。"
+                },
+                {
                     "role": "user",
                     "content": [
-                        {"type": "text", "text": f"この盆栽の写真とサイズ（{size_text}）をもとに、価値を簡易的に査定してください。"},
-                        {"type": "image_url", "image_url": image_url}
+                        {"type": "text", "text": f"この盆栽は{event.message.text}です。査定をお願いします。"},
+                        {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," + image_data.hex()}}
                     ]
                 }
             ],
             max_tokens=500
         )
-        reply_text = response.choices[0].message.content.strip()
+
+        result = response.choices[0].message.content.strip()
+
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage(text=result)
+        )
 
     except Exception as e:
-        reply_text = f"査定中にエラーが発生しました：{str(e)}"
-
-    line_bot_api.reply_message(
-        event.reply_token,
-        TextSendMessage(text=reply_text)
-    )
-
-    user_data.pop(user_id, None)  # セッションデータ初期化
-
-
-if __name__ == "__main__":
-    app.run()
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage(text=f"査定中にエラーが発生しました：\n{str(e)}")
+        )
