@@ -62,7 +62,7 @@ def handle_text(event):
         image_b64 = f"data:image/jpeg;base64,{image_data.hex()}"
 
         response = openai_client.chat.completions.create(
-            model="gpt-4-vision-preview",
+            model="gpt-4-1106-vision-preview"
             messages=[
                 {
                     "role": "system",
