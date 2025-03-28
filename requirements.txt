@@ -6,3 +6,4 @@ fastapi
 uvicorn
 Pillow
 gunicorn
+google-cloud-vision
