@@ -62,22 +62,22 @@ def handle_text(event):
         image_b64 = f"data:image/jpeg;base64,{image_data.hex()}"
 
         response = openai_client.chat.completions.create(
-            model="gpt-4-1106-vision-preview"
-            messages=[
-                {
-                    "role": "system",
-                    "content": "あなたはプロの盆栽査定士です。盆栽の見た目とサイズ情報をもとに、簡単な査定コメントを返してください。"
-                },
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": f"この盆栽は{event.message.text}です。査定をお願いします。"},
-                        {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," + image_data.hex()}}
-                    ]
-                }
-            ],
-            max_tokens=500
-        )
+    model="gpt-4-1106-vision-preview",
+    messages=[
+        {
+            "role": "system",
+            "content": "あなたはプロの盆栽査定士です。"
+        },
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "この盆栽は15cmです。査定をお願いします。"},
+                {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,xxxxx"}}
+            ]
+        }
+    ],
+    max_tokens=500
+)
 
         result = response.choices[0].message.content.strip()
 
