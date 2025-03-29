@@ -1,84 +1,110 @@
 import os
 import base64
+import tempfile
+import requests
 from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 from linebot import LineBotApi, WebhookHandler
 from linebot.models import MessageEvent, TextMessage, ImageMessage, TextSendMessage
-from openai import OpenAI
-from vision_utils import analyze_image_from_bytes
+from PIL import Image
+from io import BytesIO
+import openai
+import json
 
-# credentials.json を /tmp に復元
+# Google Vision API
+from google.cloud import vision
+from google.oauth2 import service_account
+
+# Decode and write credentials
 creds_base64 = os.environ["GOOGLE_CREDENTIALS_BASE64"]
-creds_json_path = "/tmp/credentials.json"
-with open(creds_json_path, "wb") as f:
-    f.write(base64.b64decode(creds_base64))
-os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = creds_json_path
+creds_json = base64.b64decode(creds_base64)
+with open("gcp_credentials.json", "wb") as f:
+    f.write(creds_json)
 
-# API 初期化
-app = FastAPI()
-line_bot_api = LineBotApi(os.environ["LINE_CHANNEL_ACCESS_TOKEN"])
-handler = WebhookHandler(os.environ["LINE_CHANNEL_SECRET"])
-openai_client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+credentials = service_account.Credentials.from_service_account_file("gcp_credentials.json")
+vision_client = vision.ImageAnnotatorClient(credentials=credentials)
 
+# LINE API
+line_bot_api = LineBotApi(os.environ.get("LINE_CHANNEL_ACCESS_TOKEN"))
+handler = WebhookHandler(os.environ.get("LINE_CHANNEL_SECRET"))
+
+# OpenAI API
+openai.api_key = os.environ.get("OPENAI_API_KEY")
+
+# 状態保持用（ユーザーの画像を一時保存）
 user_images = {}
+
+app = FastAPI()
 
 @app.post("/callback")
 async def callback(request: Request):
     body = await request.body()
-    signature = request.headers["X-Line-Signature"]
-    handler.handle(body.decode("utf-8"), signature)
-    return "OK"
+    signature = request.headers.get("X-Line-Signature")
+    try:
+        handler.handle(body.decode("utf-8"), signature)
+    except Exception as e:
+        return JSONResponse(status_code=400, content={"message": str(e)})
+    return JSONResponse(status_code=200, content={"message": "OK"})
 
 @handler.add(MessageEvent, message=ImageMessage)
 def handle_image(event):
-    user_id = event.source.user_id
     message_content = line_bot_api.get_message_content(event.message.id)
-    image_bytes = b"".join(chunk for chunk in message_content.iter_content())
-    user_images[user_id] = image_bytes
+    image_data = BytesIO(message_content.content)
+    user_images[event.source.user_id] = image_data
     line_bot_api.reply_message(
         event.reply_token,
-        TextSendMessage(text="サイズをテキストで送ってください（例：15cm）")
+        TextSendMessage(text="サイズをテキストで送ってください\n（例：15cm）")
     )
 
 @handler.add(MessageEvent, message=TextMessage)
 def handle_text(event):
     user_id = event.source.user_id
-    text = event.message.text.strip()
+    size_text = event.message.text.strip()
 
     if user_id not in user_images:
         line_bot_api.reply_message(
             event.reply_token,
-            TextSendMessage(text="先に画像を送ってください📷")
+            TextSendMessage(text="まずは盆栽の画像を送ってください。")
         )
         return
 
     try:
-        image_bytes = user_images.pop(user_id)
-        labels = analyze_image_from_bytes(image_bytes)
-        label_text = "、".join(labels[:5])
+        # Vision APIでラベル抽出
+        image = vision.Image(content=user_images[user_id].getvalue())
+        response = vision_client.label_detection(image=image)
+        labels = [label.description for label in response.label_annotations]
+        label_text = ", ".join(labels)
 
-        prompt = (
-            f"この盆栽はサイズが{text}です。\n"
-            f"以下の特徴が画像から確認されました：{label_text}。\n"
-            f"これらの情報から簡単な査定コメントをお願いします。"
-        )
+        # ChatGPTプロンプト
+        prompt = f"""
+以下の情報をもとに、ユーザーに返信する形で、
+盆栽の特徴・良さ・注意点を簡潔に説明し、最後にざっくりとした査定額の目安を添えてください。
+親しみやすく、ややプロっぽい語り口でお願いします。
 
-        response = openai_client.chat.completions.create(
-            model="gpt-3.5-turbo",
+【情報】
+- サイズ：{size_text}
+- 画像の特徴（Vision APIのラベル）：{label_text}
+
+※返答は150文字以内を目安にしてください。
+        """
+
+        completion = openai.ChatCompletion.create(
+            model="gpt-4-vision-preview",  # or gpt-4 if vision非対応
             messages=[
-                {"role": "system", "content": "あなたは盆栽査定士です。"},
-                {"role": "user", "content": prompt}
+                {"role": "system", "content": "あなたは盆栽の査定士です。"},
+                {"role": "user", "content": prompt},
             ]
         )
 
-        result = response.choices[0].message.content.strip()
-
-        line_bot_api.reply_message(
-            event.reply_token,
-            TextSendMessage(text=result)
-        )
+        message = completion.choices[0].message.content.strip()
 
     except Exception as e:
-        line_bot_api.reply_message(
-            event.reply_token,
-            TextSendMessage(text=f"エラー：{str(e)}")
-        )
+        message = f"査定中にエラーが発生しました：\n{str(e)}"
+
+    line_bot_api.reply_message(
+        event.reply_token,
+        TextSendMessage(text=message)
+    )
+
+    # 一度使った画像は削除
+    del user_images[user_id]
