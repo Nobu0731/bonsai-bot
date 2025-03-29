@@ -8,7 +8,7 @@ from linebot import LineBotApi, WebhookHandler
 from linebot.models import MessageEvent, TextMessage, ImageMessage, TextSendMessage
 from PIL import Image
 from io import BytesIO
-import openai
+from openai import OpenAI
 import json
 
 # Google Vision API
@@ -29,7 +29,7 @@ line_bot_api = LineBotApi(os.environ.get("LINE_CHANNEL_ACCESS_TOKEN"))
 handler = WebhookHandler(os.environ.get("LINE_CHANNEL_SECRET"))
 
 # OpenAI API
-openai.api_key = os.environ.get("OPENAI_API_KEY")
+client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 
 # 状態保持用（ユーザーの画像を一時保存）
 user_images = {}
@@ -88,15 +88,15 @@ def handle_text(event):
 ※返答は150文字以内を目安にしてください。
         """
 
-        completion = openai.ChatCompletion.create(
-            model="gpt-4-vision-preview",  # or gpt-4 if vision非対応
+        response = client.chat.completions.create(
+            model="gpt-4",
             messages=[
                 {"role": "system", "content": "あなたは盆栽の査定士です。"},
                 {"role": "user", "content": prompt},
             ]
         )
 
-        message = completion.choices[0].message.content.strip()
+        message = response.choices[0].message.content.strip()
 
     except Exception as e:
         message = f"査定中にエラーが発生しました：\n{str(e)}"
